@@ -6,8 +6,10 @@
 name: MSBuild
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "codex/offline-bots" ]
+  pull_request:
 
 env:
   # Path to the solution file relative to the root of the project.
@@ -45,7 +47,14 @@ jobs:
     - name: Zip
       run: Compress-Archive -Path ${{env.GITHUB_WORKSPACE}}\output\*.* -DestinationPath ${{env.GITHUB_WORKSPACE}}\prometheus-release.zip
 
+    - name: Upload test build
+      uses: actions/upload-artifact@v4
+      with:
+        name: prometheus-${{ github.sha }}
+        path: prometheus-release.zip
+
     - uses: ncipollo/release-action@v1
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       with:
         tag: v0.0.1
         allowUpdates: true

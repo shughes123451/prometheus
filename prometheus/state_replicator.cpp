@@ -14,10 +14,13 @@ void state_replicator::ws_client_callback(const ix::WebSocketMessagePtr& ws_msg)
 		is_connected = true;
 	}
 	else if (ws_msg->type == ix::WebSocketMessageType::Message) {
-		owassert(ws_msg->binary);
+		if (!ws_msg->binary) {
+			printf("state_replicator: ignored non-binary client message\n");
+			return;
+		}
 		nlohmann::json json = nlohmann::json::from_bson(ws_msg->str.data(), ws_msg->str.data() + ws_msg->str.size());
 		auto msg = deserialize_message(json);
-		if (msg->type == MsgBase::MessageType::None) {
+		if (!msg || msg->type == MsgBase::MessageType::None) {
 			return; //invalid
 		}
 		if (msg->type == MsgBase::MessageType::AssignPlayerID) {
@@ -52,10 +55,13 @@ void state_replicator::ws_server_callback(std::shared_ptr<ix::ConnectionState> s
 		}
 	}
 	else if (ws_msg->type == ix::WebSocketMessageType::Message) {
-		owassert(ws_msg->binary);
+		if (!ws_msg->binary) {
+			printf("state_replicator: ignored non-binary server message\n");
+			return;
+		}
 		nlohmann::json json = nlohmann::json::from_bson(ws_msg->str.data(), ws_msg->str.data() + ws_msg->str.size());
 		auto msg = deserialize_message(json);
-		if (msg->type == MsgBase::MessageType::None || msg->type == MsgBase::MessageType::AssignPlayerID) {
+		if (!msg || msg->type == MsgBase::MessageType::None || msg->type == MsgBase::MessageType::AssignPlayerID) {
 			return; //invalid
 		}
 		if (msg->type == MsgBase::MessageType::ChangeHero) {
@@ -140,6 +146,8 @@ std::shared_ptr<state_replicator::MsgBase> state_replicator::deserialize_message
 	catch (nlohmann::json::exception& ex) {
 		printf("state_replicator: failed to deserialize message with error: %s\nmessage: %s\n", ex.what(), input.dump().c_str());
 	}
+	if (!result)
+		result = std::shared_ptr<MsgBase>(new NoneMessage);
 	return result;
 }
 

@@ -5,6 +5,7 @@
 #include "idadefs.h"
 #include <stdexcept>
 #include <map>
+#include <set>
 #include <vector>
 
 struct Entity;
@@ -63,8 +64,8 @@ struct Entity {
         STRUCT_PLACE(uint32, entity_global_id, 0x90);
         STRUCT_PLACE(uint32, entity_id, 0x94);
         STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry, 0x30);
-        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry2, 0x38); //Für STUSkinTheme
-        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry3, 0x40); //Für STUSkinBase
+        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry2, 0x38); //FÃ¼r STUSkinTheme
+        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry3, 0x40); //FÃ¼r STUSkinBase
     };
 
     inline ComponentBase* getById(int id) {
@@ -220,7 +221,7 @@ struct Component_10_FilterBits {
         }
     }
 
-    //default values für controller entity
+    //default values fÃ¼r controller entity
     void set_filterbits_spectator() {
         field_8C = 0x101;
         field_8E = 1;
@@ -461,7 +462,7 @@ struct Component_1_SceneRendering {
     }
 
     bool IsVisible() {
-        return (rendering_flags & 0x200000008000) != 0x200000008000;
+        return (rendering_flags & 0x200000008000) == 0x200000008000;
     }
 
     //Only x,y,z
@@ -1014,9 +1015,15 @@ public:
 
             auto pet_comp = local_ent->getById<Component_20_ModelReference>(0x20);
             if (pet_comp) {
-                _game_ea->delEnt(_game_ea->getEntById(pet_comp->aim_entid));
-                _game_ea->delEnt(_game_ea->getEntById(pet_comp->cam_attach_entid));
-                _game_ea->delEnt(_game_ea->getEntById(pet_comp->movement_attach_entid));
+                std::set<uint32> attachment_ids{
+                    pet_comp->aim_entid,
+                    pet_comp->cam_attach_entid,
+                    pet_comp->movement_attach_entid
+                };
+                for (auto attachment_id : attachment_ids) {
+                    if (attachment_id != 0 && attachment_id != local_ent->entity_id)
+                        _game_ea->delEnt(_game_ea->getEntById(attachment_id));
+                }
             }
             _game_ea->delEnt(local_ent);
         }
@@ -1031,4 +1038,3 @@ public:
 
     bool demo_join_game = false;
 };
-

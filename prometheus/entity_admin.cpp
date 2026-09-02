@@ -673,23 +673,24 @@ void PrometheusSystem::OnTick(float tick) {
 			if (local_model) {
 				auto ss = local_model->getById<Component_23_Statescript>(0x23);
 				auto health_stru = local_model->getById<Component_28_STUHealthComponent>(0x28);
+				if (ss && health_stru && ss->ss_inner.rid_entity_varbag) {
+					float health = health_stru->vfptr->GetFullCurrentHealth(health_stru);
+					float health_max = health_stru->vfptr->GetFullMaxHealth(health_stru);
 
-				float health = health_stru->vfptr->GetFullCurrentHealth(health_stru);
-				float health_max = health_stru->vfptr->GetFullMaxHealth(health_stru);
+					StatescriptPrimitive health_cv{};
+					health_cv.type = StatescriptPrimitive_FLT;
 
-				StatescriptPrimitive health_cv{};
-				health_cv.type = StatescriptPrimitive_FLT;
+					*(float*)&health_cv.value = health;
+					ss->ss_inner.rid_entity_varbag->SetVar({ StatescriptVar_ENTITY_VARBAG, 0x0D800000000006C4 }, health_cv);
 
-				*(float*)&health_cv.value = health;
-				ss->ss_inner.rid_entity_varbag->SetVar({ StatescriptVar_ENTITY_VARBAG, 0x0D800000000006C4 }, health_cv);
+					*(float*)&health_cv.value = health_max;
+					ss->ss_inner.rid_entity_varbag->SetVar({ StatescriptVar_ENTITY_VARBAG, 0x0D800000000006C9 }, health_cv);
 
-				*(float*)&health_cv.value = health_max;
-				ss->ss_inner.rid_entity_varbag->SetVar({ StatescriptVar_ENTITY_VARBAG, 0x0D800000000006C9 }, health_cv);
-
-				StatescriptPrimitive wpn_1{};
-				wpn_1.type = StatescriptPrimitive_INT;
-				wpn_1.value = 1;
-				ss->ss_inner.rid_entity_varbag->SetArray({ 0x0D8000000000001D }, wpn_1, wpn_1, 0);
+					StatescriptPrimitive wpn_1{};
+					wpn_1.type = StatescriptPrimitive_INT;
+					wpn_1.value = 1;
+					ss->ss_inner.rid_entity_varbag->SetArray({ 0x0D8000000000001D }, wpn_1, wpn_1, 0);
+				}
 			}
 		}
 	}

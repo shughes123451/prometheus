@@ -165,8 +165,11 @@ struct teList {
 	}
 
 	void remove_item(int index) {
-		owassert(index < num);
-		memcpy((void*)(ptr + sizeof(T) * index), (void*)(ptr + sizeof(T) * (index + 1)), sizeof(T) * (num - index - 1));
+		owassert(index >= 0 && index < num);
+		if (index < 0 || index >= num)
+			return;
+		if (index < num - 1)
+			memmove(ptr + index, ptr + index + 1, sizeof(T) * (num - index - 1));
 		num--;
 	}
 
