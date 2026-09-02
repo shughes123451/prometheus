@@ -991,8 +991,24 @@ class PrometheusSystem {
     int _trigger_helloVoiceLine_ticks = -1;
     bool _applied_demo = false;
 
+    struct OfflineBot {
+        Entity* controller{};
+        Entity* model{};
+        Vector4 position{};
+        float attack_cooldown{};
+        float respawn_remaining{};
+        bool alive{ true };
+    };
+    std::vector<OfflineBot> _offline_bots{};
+    bool _offline_match_active = false;
+    int _offline_player_score = 0;
+    int _offline_bot_score = 0;
+    float _offline_player_fire_cooldown = 0.0f;
+    Vector4 _offline_spawn_origin{};
+
     void state_replicator_do();
     void state_replicator_exhandled();
+    void offline_match_tick(float tick, Entity* local_controller, Entity* local_model);
 
     static inline PrometheusSystem* s_instance = nullptr;
     static inline View* (*deallocate_view_orig)(View*, char);
@@ -1003,6 +1019,12 @@ public:
     static PrometheusSystem* instance() {
         return s_instance;
     }
+
+    bool StartOfflineMatch(int bot_count = 5);
+    void StopOfflineMatch();
+    bool OfflineMatchActive() const { return _offline_match_active; }
+    int OfflinePlayerScore() const { return _offline_player_score; }
+    int OfflineBotScore() const { return _offline_bot_score; }
 
     void DeleteLocalEnt() {
         auto local_ent = _game_ea->getLocalEnt();

@@ -128,6 +128,21 @@ void management_window::render() {
 			auto game_ea = GameEntityAdmin();
 			if (game_ea) {
 				auto world = get_system27_WorldEngineSystem(game_ea);
+				auto prometheus = PrometheusSystem::instance();
+				if (prometheus && ImGui::BeginMenu("Offline TDM")) {
+					if (!prometheus->OfflineMatchActive()) {
+						if (ImGui::MenuItem("Start 1v5")) {
+							if (!prometheus->StartOfflineMatch(5))
+								imgui_helpers::messageBox("Spawn a local hero before starting Offline TDM.");
+						}
+					}
+					else if (ImGui::MenuItem("Stop match")) {
+						prometheus->StopOfflineMatch();
+					}
+					ImGui::Separator();
+					ImGui::Text("Player %d - %d Bots", prometheus->OfflinePlayerScore(), prometheus->OfflineBotScore());
+					ImGui::EndMenu();
+				}
 				if (ImGui::BeginMenu("Map")) {
 					for (auto& item : get_maps()) {
 						if (ImGui::MenuItem(item.first.c_str())) {
