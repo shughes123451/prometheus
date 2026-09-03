@@ -1034,6 +1034,9 @@ private:
     float _objective_progress = 0.0f;
     float _payload_progress = 0.0f;
     float _local_applied_health_multiplier = 1.0f;
+    float _diagnostic_elapsed = 0.0f;
+    int _diagnostic_sample = 0;
+    LocalPhase _diagnostic_last_phase{ LocalPhase::Idle };
     int _objective_owner = -1;
     Vector4 _offline_spawn_origin{};
     Vector4 _objective_position{};
@@ -1041,6 +1044,7 @@ private:
     void state_replicator_do();
     void state_replicator_exhandled();
     void offline_match_tick(float tick, Entity* local_controller, Entity* local_model);
+    void diagnostic_tick(float tick, Entity* local_controller, Entity* local_model);
 
     static inline PrometheusSystem* s_instance = nullptr;
     static inline View* (*deallocate_view_orig)(View*, char);

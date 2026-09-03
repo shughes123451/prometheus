@@ -14,6 +14,10 @@
 #include "demo_cammoves.cpp"
 #include <algorithm>
 #include <cmath>
+#include <cstdarg>
+#include <cstdio>
+
+namespace { void diagnostic_log(const char* format, ...); }
 
 __int64 PrometheusSystem::get_inheritance() {
 	return NULL;
@@ -96,6 +100,7 @@ string_rep* get_displayString_func(string_rep* a1, __int64 id, __int64 a3) {
 }
 
 void play_game_btn() {
+	diagnostic_log("ui_play_pressed\n");
 	if (auto system = PrometheusSystem::instance())
 		system->BeginLocalQueue();
 }
@@ -114,6 +119,7 @@ char SendHeroSelection(StatescriptAction_vt** impl, StatescriptState* state, Sta
 	//0 = just send teammate preview
 	if (hero_value.value != 0 && behavior == 1) {
 		printf("Selected Hero: %p\n", hero_value.value);
+		diagnostic_log("hero_selected id=%llx behavior=%d\n", hero_value.value, static_cast<int>(behavior));
 
 		auto old_local = GameEntityAdmin()->getLocalEnt();
 		if (old_local) {
@@ -665,6 +671,35 @@ void PrometheusSystem::state_replicator_exhandled() {
 }
 
 namespace {
+FILE* diagnostic_file() {
+	static FILE* file = []() {
+		char executable[MAX_PATH]{};
+		GetModuleFileNameA(nullptr, executable, MAX_PATH);
+		char* slash = strrchr(executable, '\\');
+		if (slash) *(slash + 1) = 0;
+		strcat_s(executable, "prometheus_diagnostic.log");
+		FILE* result{};
+		fopen_s(&result, executable, "w");
+		if (result) {
+			fprintf(result, "Prometheus native repair diagnostics v2\n");
+			fprintf(result, "game_base=%p build_target=0.8.0.0.24919\n", (void*)globals::gameBase);
+			fflush(result);
+		}
+		return result;
+	}();
+	return file;
+}
+
+void diagnostic_log(const char* format, ...) {
+	auto file = diagnostic_file();
+	if (!file) return;
+	va_list args;
+	va_start(args, format);
+	vfprintf(file, format, args);
+	va_end(args);
+	fflush(file);
+}
+
 float offline_health_total(Component_28_STUHealthComponent* health) {
 	if (!health)
 		return 0.0f;
@@ -710,6 +745,37 @@ float offline_distance_xz(const Vector4& a, const Vector4& b) {
 	const float dx = a.X - b.X;
 	const float dz = a.Z - b.Z;
 	return std::sqrt(dx * dx + dz * dz);
+}
+
+bool offline_place_entity(Entity* entity, const Vector4& position, const Vector4& rotation) {
+	if (!entity) return false;
+	bool placed = false;
+	__try {
+		if (auto movement = entity->getById<Component_12_STUMovementStateComponent>(0x12)) {
+			movement->mov_state.absolute_position = position;
+			movement->mov_state.position_delta = Vector4{};
+			movement->mov_state.rotation_quaternion = rotation;
+			movement->mov_state.command_frame++;
+			movement->PasteMovementState(&movement->mov_state);
+			placed = true;
+		}
+		if (auto mover = entity->getById<Component_15_STUCharacterMoverComponent>(0x15)) {
+			mover->movement_state_1.absolute_position = position;
+			mover->movement_state_2.absolute_position = position;
+			mover->movement_state_1.rotation_quaternion = rotation;
+			mover->movement_state_2.rotation_quaternion = rotation;
+			placed = true;
+		}
+		if (auto scene = entity->getById<Component_1_SceneRendering>(1)) {
+			scene->SetPosRotation(position, rotation);
+			placed = true;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		diagnostic_log("placement_exception entity=%x\n", entity->entity_id);
+		return false;
+	}
+	return placed;
 }
 }
 
@@ -776,6 +842,13 @@ bool PrometheusSystem::StartLocalMatch() {
 	StopOfflineMatch();
 
 	_offline_spawn_origin = local_scene->position;
+	if (auto movement = local_model->getById<Component_12_STUMovementStateComponent>(0x12)) {
+		const auto& native_position = movement->mov_state.absolute_position;
+		if (std::abs(native_position.X) + std::abs(native_position.Y) + std::abs(native_position.Z) > 0.01f)
+			_offline_spawn_origin = native_position;
+	}
+	diagnostic_log("match_start mode=%s origin=(%.3f,%.3f,%.3f) hero=%llx\n", LocalModeName(),
+		_offline_spawn_origin.X, _offline_spawn_origin.Y, _offline_spawn_origin.Z, player_info->selected_heroid);
 	_offline_player_score = 0;
 	_offline_bot_score = 0;
 	_offline_player_fire_cooldown = 0.0f;
@@ -814,8 +887,14 @@ bool PrometheusSystem::StartLocalMatch() {
 			_offline_spawn_origin.Z + (slot - 2.5f) * 3.0f,
 			0.0f);
 		bot.spawn_position = bot.position;
-		if (auto scene = bot.model->getById<Component_1_SceneRendering>(1))
-			scene->SetPosRotation(bot.position, scene->rotation);
+		Vector4 rotation(0.0f, team == 0 ? 0.7071067f : -0.7071067f, 0.0f, 0.7071067f);
+		const bool model_placed = offline_place_entity(bot.model, bot.position, rotation);
+		offline_place_entity(bot.controller, bot.position, rotation);
+		diagnostic_log("bot_spawn slot=%d team=%d controller=%x model=%x placed=%d components=",
+			index, team, bot.controller->entity_id, bot.model->entity_id, model_placed ? 1 : 0);
+		for (int component = 0; component < bot.model->component_list.num; ++component)
+			diagnostic_log("%02x,", bot.model->component_list.ptr[component]->component_id);
+		diagnostic_log("\n");
 		offline_scale_health(bot.model->getById<Component_28_STUHealthComponent>(0x28), _local_config.health_multiplier);
 		_offline_bots.push_back(bot);
 	}
@@ -850,6 +929,8 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 			if (auto world = game_ea ? get_system27_WorldEngineSystem(game_ea) : nullptr) {
 				world->wanted_map_id = 0x800000000000165; // Hanamura, known-good prototype map
 				world->world_state = 2;
+				diagnostic_log("native_world_request map=%llx state=%d\n", world->wanted_map_id, world->world_state);
+				world->Call_OnStateChance();
 			}
 		}
 		return;
@@ -914,6 +995,7 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 			if (bot.respawn_remaining <= 0.0f) {
 				bot.position = bot.spawn_position;
 				offline_refill_health(health);
+				offline_place_entity(bot.model, bot.position, scene->rotation);
 				scene->SetVisible();
 				bot.alive = true;
 			}
@@ -955,7 +1037,7 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 		}
 		const float yaw = std::atan2(dx, dz);
 		const Vector4 rotation(0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f));
-		scene->SetPosRotation(bot.position, rotation);
+		offline_place_entity(bot.model, bot.position, rotation);
 
 		bot.attack_cooldown = (std::max)(0.0f, bot.attack_cooldown - tick);
 		if (distance <= 30.0f && bot.attack_cooldown <= 0.0f && target_health) {
@@ -1000,6 +1082,48 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 		_local_phase = LocalPhase::Complete;
 }
 
+void PrometheusSystem::diagnostic_tick(float tick, Entity* local_controller, Entity* local_model) {
+	static short previous_buttons = -1;
+	_diagnostic_elapsed += tick;
+	if (_diagnostic_last_phase != _local_phase) {
+		diagnostic_log("phase_change sample=%d from=%d to=%d (%s)\n", _diagnostic_sample,
+			static_cast<int>(_diagnostic_last_phase), static_cast<int>(_local_phase), LocalPhaseName());
+		_diagnostic_last_phase = _local_phase;
+	}
+	short buttons = 0;
+	if (local_controller) {
+		if (auto input = local_controller->getById<Component_2F_LocalPlayer>(0x2F))
+			buttons = input->curr_movcommand.ability_button_states;
+	}
+	if (buttons != previous_buttons) {
+		diagnostic_log("input_change sample=%d buttons=0x%04hx primary=%d secondary=%d ability1=%d ability2=%d ult=%d\n",
+			_diagnostic_sample, buttons, !!(buttons & 1), !!(buttons & 2), !!(buttons & 0x10), !!(buttons & 0x20), !!(buttons & 0x40));
+		previous_buttons = buttons;
+	}
+	if (_diagnostic_elapsed < 1.0f) return;
+	_diagnostic_elapsed = 0.0f;
+	++_diagnostic_sample;
+	auto world = _game_ea ? get_system27_WorldEngineSystem(_game_ea) : nullptr;
+	diagnostic_log("sample=%d world_state=%d wanted_map=%llx loaded_map=%llx local_controller=%p local_model=%p bots=%zu\n",
+		_diagnostic_sample, world ? world->world_state : -1, world ? world->wanted_map_id : 0,
+		world ? world->loaded_map_id : 0, local_controller, local_model, _offline_bots.size());
+	if (!local_model) return;
+	auto scene = local_model->getById<Component_1_SceneRendering>(1);
+	auto movement = local_model->getById<Component_12_STUMovementStateComponent>(0x12);
+	auto mover = local_model->getById<Component_15_STUCharacterMoverComponent>(0x15);
+	auto health = local_model->getById<Component_28_STUHealthComponent>(0x28);
+	auto scripts = local_model->getById<Component_23_Statescript>(0x23);
+	diagnostic_log(" local id=%x scene=(%.3f,%.3f,%.3f) mov12=(%.3f,%.3f,%.3f) mov15=(%.3f,%.3f,%.3f) hp=%.1f scripts=%d buttons=0x%04hx comps=",
+		local_model->entity_id, scene ? scene->position.X : 0, scene ? scene->position.Y : 0, scene ? scene->position.Z : 0,
+		movement ? movement->mov_state.absolute_position.X : 0, movement ? movement->mov_state.absolute_position.Y : 0,
+		movement ? movement->mov_state.absolute_position.Z : 0, mover ? mover->movement_state_1.absolute_position.X : 0,
+		mover ? mover->movement_state_1.absolute_position.Y : 0, mover ? mover->movement_state_1.absolute_position.Z : 0,
+		health ? offline_health_total(health) : 0, scripts ? scripts->ss_inner.g1_instanceArr.num : -1, buttons);
+	for (int component = 0; component < local_model->component_list.num; ++component)
+		diagnostic_log("%02x,", local_model->component_list.ptr[component]->component_id);
+	diagnostic_log("\n");
+}
+
 
 void PrometheusSystem::OnTick(float tick) {
 	Entity* local_controller = _game_ea->getLocalEnt();
@@ -1034,6 +1158,7 @@ void PrometheusSystem::OnTick(float tick) {
 		}
 	}
 
+	diagnostic_tick(tick, local_controller, local_model);
 	offline_match_tick(tick, local_controller, local_model);
 
 	if (globals::isDemo) {
@@ -1572,33 +1697,43 @@ void PrometheusSystem_Mapfunc::nullsub_1() {
 }
 void PrometheusSystem_Mapfunc::change_state_3_globalloading() {
 	printf("PrometheusSystem_Mapfunc: change_state_3_globalloading\n");
+	diagnostic_log("map_callback global_loading\n");
 }
 void PrometheusSystem_Mapfunc::change_state_4_worldloading() {
 	printf("PrometheusSystem_Mapfunc: change_state_4_worldloading\n");
+	diagnostic_log("map_callback world_loading\n");
 }
 void PrometheusSystem_Mapfunc::change_state_5_worldloaded() {
 	printf("PrometheusSystem_Mapfunc: change_state_5_worldloaded\n");
+	diagnostic_log("map_callback world_loaded\n");
 }
 void PrometheusSystem_Mapfunc::change_state_6_world_replicating() {
 	printf("PrometheusSystem_Mapfunc: change_state_6_world_replicating\n");
+	diagnostic_log("map_callback world_replicating\n");
 }
 void PrometheusSystem_Mapfunc::change_state_7_gamemode_loading() {
 	printf("PrometheusSystem_Mapfunc: change_state_7_gamemode_loading\n");
+	diagnostic_log("map_callback gamemode_loading\n");
 }
 void PrometheusSystem_Mapfunc::maybe_on_gamemode_unload() {
 	printf("PrometheusSystem_Mapfunc: maybe_on_gamemode_unload\n");
+	diagnostic_log("map_callback gamemode_unload\n");
 }
 void PrometheusSystem_Mapfunc::on_gamemode_loading() {
 	printf("PrometheusSystem_Mapfunc: on_gamemode_loading\n");
+	diagnostic_log("map_callback gamemode_loaded_in_game_ea\n");
 }
 void PrometheusSystem_Mapfunc::maybe_on_map_unload() {
 	printf("PrometheusSystem_Mapfunc: maybe_on_map_unload\n");
+	diagnostic_log("map_callback map_unload\n");
 }
 void PrometheusSystem_Mapfunc::OnWorldLoadedAndInGameEnttiyAdmin() {
 	printf("PrometheusSystem_Mapfunc: OnWorldLoadedAndInGameEnttiyAdmin\n");
+	diagnostic_log("map_callback world_loaded_game_ea\n");
 }
 void PrometheusSystem_Mapfunc::OnWorldLoadingAndInGameEntityAdmin() {
 	printf("PrometheusSystem_Mapfunc: OnWorldLoadingAndInGameEntityAdmin\n");
+	diagnostic_log("map_callback world_loading_game_ea\n");
 }
 void PrometheusSystem_Mapfunc::field_5() {
 	printf("PrometheusSystem_Mapfunc: field_5\n");
