@@ -1051,6 +1051,7 @@ private:
     void state_replicator_exhandled();
     void offline_match_tick(float tick, Entity* local_controller, Entity* local_model);
     bool spawn_next_offline_bot();
+    bool spawn_default_local_hero();
     void diagnostic_tick(float tick, Entity* local_controller, Entity* local_model);
 
     static inline PrometheusSystem* s_instance = nullptr;

@@ -917,6 +917,37 @@ bool PrometheusSystem::spawn_next_offline_bot() {
 	return true;
 }
 
+bool PrometheusSystem::spawn_default_local_hero() {
+	if (!_game_ea || _game_ea->getLocalEnt())
+		return _game_ea && _game_ea->getLocalEnt();
+	constexpr __int64 default_hero = 0x02E0000000000042; // McCree
+	auto hero = stu_resources::GetByID(default_hero);
+	if (!hero) {
+		diagnostic_log("default_hero_failed reason=missing_hero_stu id=%llx\n", default_hero);
+		return false;
+	}
+	const __int64 model_resource = hero->to_editable().get_argument_resource("m_gameplayEntity")->resource_id;
+	if (!model_resource) {
+		diagnostic_log("default_hero_failed reason=missing_model_resource id=%llx\n", default_hero);
+		return false;
+	}
+	player_spawner spawner(model_resource);
+	spawner.controller_info.heroid = default_hero;
+	spawner.model_info.heroid = default_hero;
+	auto spawned = spawner.spawn();
+	if (!spawned.first || !spawned.second) {
+		diagnostic_log("default_hero_failed reason=spawn_failed\n");
+		return false;
+	}
+	diagnostic_log("default_hero_spawned controller=%x model=%x hero=%llx\n",
+		spawned.first->entity_id, spawned.second->entity_id, default_hero);
+	state_replicator::ChangeHeroMessage msg;
+	msg.heroid = default_hero;
+	msg.skinid = 0;
+	state_replicator::emplace_hero_update(msg);
+	return true;
+}
+
 void PrometheusSystem::StopOfflineMatch() {
 	_local_phase = LocalPhase::Idle;
 	_native_player_ready_elapsed = 0.0f;
@@ -958,7 +989,19 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 			if (_native_player_ready_elapsed >= 2.0f)
 				StartLocalMatch();
 		}
-		else if (_local_phase_remaining <= 0.0f) {
+		else {
+			auto world = _game_ea ? get_system27_WorldEngineSystem(_game_ea) : nullptr;
+			if (world && world->world_state == 8) {
+				_native_player_ready_elapsed += tick;
+				if (_native_player_ready_elapsed >= 2.0f) {
+					if (spawn_default_local_hero())
+						_native_player_ready_elapsed = 0.0f;
+					else
+						_native_player_ready_elapsed = 1.0f;
+				}
+			}
+		}
+		if (_local_phase_remaining <= 0.0f && !local_controller) {
 			printf("Local match: timed out waiting for hero selection\n");
 			StopOfflineMatch();
 		}
