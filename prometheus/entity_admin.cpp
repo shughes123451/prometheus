@@ -96,7 +96,8 @@ string_rep* get_displayString_func(string_rep* a1, __int64 id, __int64 a3) {
 }
 
 void play_game_btn() {
-	PrometheusSystem::instance()->demo_join_game = true;
+	if (auto system = PrometheusSystem::instance())
+		system->BeginLocalQueue();
 }
 
 //0xd774b0
@@ -680,6 +681,18 @@ void offline_refill_health(Component_28_STUHealthComponent* health) {
 	health->shield_health[0].curr_health = health->shield_health[0].max_health;
 }
 
+void offline_scale_health(Component_28_STUHealthComponent* health, float factor) {
+	if (!health || factor <= 0.0f || factor == 1.0f)
+		return;
+	auto scale = [factor](HealthPart& part) {
+		part.max_health *= factor;
+		part.curr_health *= factor;
+	};
+	scale(health->normal_health[0]);
+	scale(health->armour_health[0]);
+	scale(health->shield_health[0]);
+}
+
 void offline_apply_damage(Component_28_STUHealthComponent* health, float damage) {
 	if (!health || damage <= 0.0f)
 		return;
@@ -700,9 +713,43 @@ float offline_distance_xz(const Vector4& a, const Vector4& b) {
 }
 }
 
-bool PrometheusSystem::StartOfflineMatch(int bot_count) {
+const char* PrometheusSystem::LocalModeName() const {
+	static const char* names[] = { "Team Deathmatch", "Control", "Assault", "Escort", "Hybrid" };
+	return names[static_cast<int>(_local_config.mode)];
+}
+
+const char* PrometheusSystem::LocalPhaseName() const {
+	static const char* names[] = { "Idle", "Searching", "Loading", "Setup", "In progress", "Overtime", "Complete" };
+	return names[static_cast<int>(_local_phase)];
+}
+
+int PrometheusSystem::LocalAliveCount(int team) const {
+	int count = team == 0 ? 1 : 0;
+	for (const auto& bot : _offline_bots)
+		if (bot.team == team && bot.alive)
+			++count;
+	return count;
+}
+
+void PrometheusSystem::BeginLocalQueue() {
+	if (_local_phase != LocalPhase::Idle && _local_phase != LocalPhase::Complete)
+		return;
 	StopOfflineMatch();
-	if (!_game_ea || bot_count <= 0)
+	_local_phase = LocalPhase::Queueing;
+	_local_phase_remaining = 2.5f;
+	demo_join_game = true;
+	printf("Local match: searching for bots (%s)\n", LocalModeName());
+}
+
+bool PrometheusSystem::StartOfflineMatch(int bot_count) {
+	_local_config.allies = 0;
+	_local_config.enemies = bot_count;
+	_local_config.mode = LocalMode::TeamDeathmatch;
+	return StartLocalMatch();
+}
+
+bool PrometheusSystem::StartLocalMatch() {
+	if (!_game_ea || _local_config.enemies <= 0)
 		return false;
 
 	Entity* local_controller = _game_ea->getLocalEnt();
@@ -716,6 +763,9 @@ bool PrometheusSystem::StartOfflineMatch(int bot_count) {
 	auto local_scene = local_model ? local_model->getById<Component_1_SceneRendering>(1) : nullptr;
 	if (!local_model || !local_scene)
 		return false;
+	offline_scale_health(local_model->getById<Component_28_STUHealthComponent>(0x28),
+		_local_config.health_multiplier / (std::max)(0.01f, _local_applied_health_multiplier));
+	_local_applied_health_multiplier = _local_config.health_multiplier;
 
 	auto hero = stu_resources::GetByID(player_info->selected_heroid);
 	if (!hero)
@@ -723,46 +773,61 @@ bool PrometheusSystem::StartOfflineMatch(int bot_count) {
 	const __int64 model_resource = hero->to_editable().get_argument_resource("m_gameplayEntity")->resource_id;
 	if (!model_resource)
 		return false;
+	StopOfflineMatch();
 
 	_offline_spawn_origin = local_scene->position;
 	_offline_player_score = 0;
 	_offline_bot_score = 0;
 	_offline_player_fire_cooldown = 0.0f;
+	_local_match_remaining = _local_config.match_seconds;
+	_local_phase_remaining = _local_config.setup_seconds;
+	_objective_progress = 0.0f;
+	_payload_progress = 0.0f;
+	_objective_owner = -1;
+	_objective_position = Vector4(_offline_spawn_origin.X + 18.0f, _offline_spawn_origin.Y,
+		_offline_spawn_origin.Z, 0.0f);
 
+	const int bot_count = (std::clamp)(_local_config.allies, 0, 5) + (std::clamp)(_local_config.enemies, 1, 6);
 	for (int index = 0; index < bot_count; ++index) {
+		const int team = index < _local_config.allies ? 0 : 1;
 		player_spawner spawner(model_resource);
 		spawner.controller_info.heroid = player_info->selected_heroid;
 		spawner.controller_info.set_localent = false;
 		spawner.controller_info.set_2f_movable = false;
 		spawner.controller_info.load_2f_33 = false;
-		spawner.controller_info.team = 1;
+		spawner.controller_info.team = team;
 		spawner.model_info.heroid = player_info->selected_heroid;
-		spawner.model_info.team = 1;
+		spawner.model_info.team = team;
 		auto spawned = spawner.spawn();
 		if (!spawned.first || !spawned.second)
 			continue;
 
-		const float angle = (6.28318530718f * index) / bot_count;
+		const float side = team == 0 ? -1.0f : 1.0f;
+		const int slot = team == 0 ? index : index - _local_config.allies;
 		OfflineBot bot{};
 		bot.controller = spawned.first;
 		bot.model = spawned.second;
+		bot.team = team;
 		bot.position = Vector4(
-			_offline_spawn_origin.X + std::cos(angle) * 14.0f,
+			_offline_spawn_origin.X + side * 18.0f,
 			_offline_spawn_origin.Y,
-			_offline_spawn_origin.Z + std::sin(angle) * 14.0f,
+			_offline_spawn_origin.Z + (slot - 2.5f) * 3.0f,
 			0.0f);
+		bot.spawn_position = bot.position;
 		if (auto scene = bot.model->getById<Component_1_SceneRendering>(1))
 			scene->SetPosRotation(bot.position, scene->rotation);
+		offline_scale_health(bot.model->getById<Component_28_STUHealthComponent>(0x28), _local_config.health_multiplier);
 		_offline_bots.push_back(bot);
 	}
 
-	_offline_match_active = !_offline_bots.empty();
-	printf("Offline TDM: started with %zu bots\n", _offline_bots.size());
-	return _offline_match_active;
+	_local_phase = _offline_bots.empty() ? LocalPhase::Idle : LocalPhase::Setup;
+	printf("Local match: %s started with %zu bots\n", LocalModeName(), _offline_bots.size());
+	return _local_phase != LocalPhase::Idle;
 }
 
 void PrometheusSystem::StopOfflineMatch() {
-	_offline_match_active = false;
+	_local_phase = LocalPhase::Idle;
+	demo_join_game = false;
 	auto bots = _offline_bots;
 	_offline_bots.clear();
 	if (_game_ea) {
@@ -776,7 +841,31 @@ void PrometheusSystem::StopOfflineMatch() {
 }
 
 void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, Entity* local_model) {
-	if (!_offline_match_active || !local_controller || !local_model)
+	if (_local_phase == LocalPhase::Queueing) {
+		_local_phase_remaining -= tick;
+		if (_local_phase_remaining <= 0.0f) {
+			_local_phase = LocalPhase::Loading;
+			_local_phase_remaining = 30.0f;
+			auto game_ea = GameEntityAdmin();
+			if (auto world = game_ea ? get_system27_WorldEngineSystem(game_ea) : nullptr) {
+				world->wanted_map_id = 0x800000000000165; // Hanamura, known-good prototype map
+				world->world_state = 2;
+			}
+		}
+		return;
+	}
+	if (_local_phase == LocalPhase::Loading) {
+		_local_phase_remaining -= tick;
+		if (local_controller && local_model)
+			StartLocalMatch();
+		else if (_local_phase_remaining <= 0.0f) {
+			printf("Local match: timed out waiting for hero selection\n");
+			StopOfflineMatch();
+		}
+		return;
+	}
+	if ((_local_phase != LocalPhase::Setup && _local_phase != LocalPhase::Active &&
+		_local_phase != LocalPhase::Overtime) || !local_controller || !local_model)
 		return;
 	auto local_scene = local_model->getById<Component_1_SceneRendering>(1);
 	auto local_health = local_model->getById<Component_28_STUHealthComponent>(0x28);
@@ -784,14 +873,21 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 	if (!local_scene || !local_health || !local_input)
 		return;
 
+	if (_local_phase == LocalPhase::Setup) {
+		_local_phase_remaining -= tick;
+		if (_local_phase_remaining <= 0.0f)
+			_local_phase = LocalPhase::Active;
+		return;
+	}
 	const Vector4 player_position = local_scene->position;
+	_local_match_remaining = (std::max)(0.0f, _local_match_remaining - tick);
 	_offline_player_fire_cooldown = (std::max)(0.0f, _offline_player_fire_cooldown - tick);
 	const bool firing = (local_input->curr_movcommand.ability_button_states & 1) != 0;
 
 	OfflineBot* nearest = nullptr;
 	float nearest_distance = 100000.0f;
 	for (auto& bot : _offline_bots) {
-		if (!bot.alive || !bot.model)
+		if (!bot.alive || !bot.model || bot.team == 0)
 			continue;
 		const float distance = offline_distance_xz(bot.position, player_position);
 		if (distance < nearest_distance) {
@@ -800,8 +896,8 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 		}
 	}
 	if (firing && nearest && nearest_distance <= 40.0f && _offline_player_fire_cooldown <= 0.0f) {
-		offline_apply_damage(nearest->model->getById<Component_28_STUHealthComponent>(0x28), 20.0f);
-		_offline_player_fire_cooldown = 0.1f;
+		offline_apply_damage(nearest->model->getById<Component_28_STUHealthComponent>(0x28), _local_config.player_damage);
+		_offline_player_fire_cooldown = (std::max)(0.03f, 0.1f * _local_config.cooldown_multiplier);
 	}
 
 	for (size_t index = 0; index < _offline_bots.size(); ++index) {
@@ -816,9 +912,7 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 		if (!bot.alive) {
 			bot.respawn_remaining -= tick;
 			if (bot.respawn_remaining <= 0.0f) {
-				const float angle = (6.28318530718f * static_cast<float>(index)) / _offline_bots.size();
-				bot.position = Vector4(_offline_spawn_origin.X + std::cos(angle) * 14.0f,
-					_offline_spawn_origin.Y, _offline_spawn_origin.Z + std::sin(angle) * 14.0f, 0.0f);
+				bot.position = bot.spawn_position;
 				offline_refill_health(health);
 				scene->SetVisible();
 				bot.alive = true;
@@ -828,17 +922,34 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 
 		if (offline_health_total(health) <= 0.0f) {
 			bot.alive = false;
-			bot.respawn_remaining = 3.0f;
+			bot.respawn_remaining = _local_config.respawn_seconds;
 			scene->SetInvisible();
-			++_offline_player_score;
+			if (bot.team == 1)
+				++_offline_player_score;
+			else
+				++_offline_bot_score;
 			continue;
 		}
 
-		const float dx = player_position.X - bot.position.X;
-		const float dz = player_position.Z - bot.position.Z;
+		Vector4 target = player_position;
+		Component_28_STUHealthComponent* target_health = local_health;
+		float best = offline_distance_xz(bot.position, player_position);
+		if (bot.team == 0) best = 100000.0f;
+		for (auto& candidate : _offline_bots) {
+			if (!candidate.alive || !candidate.model || candidate.team == bot.team)
+				continue;
+			const float d = offline_distance_xz(bot.position, candidate.position);
+			if (d < best) {
+				best = d;
+				target = candidate.position;
+				target_health = candidate.model->getById<Component_28_STUHealthComponent>(0x28);
+			}
+		}
+		const float dx = target.X - bot.position.X;
+		const float dz = target.Z - bot.position.Z;
 		const float distance = std::sqrt(dx * dx + dz * dz);
 		if (distance > 8.0f && distance > 0.001f) {
-			const float step = (std::min)(2.75f * tick, distance - 8.0f);
+			const float step = (std::min)(_local_config.bot_speed * tick, distance - 8.0f);
 			bot.position.X += (dx / distance) * step;
 			bot.position.Z += (dz / distance) * step;
 		}
@@ -847,9 +958,9 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 		scene->SetPosRotation(bot.position, rotation);
 
 		bot.attack_cooldown = (std::max)(0.0f, bot.attack_cooldown - tick);
-		if (distance <= 30.0f && bot.attack_cooldown <= 0.0f) {
-			offline_apply_damage(local_health, 8.0f);
-			bot.attack_cooldown = 0.2f;
+		if (distance <= 30.0f && bot.attack_cooldown <= 0.0f && target_health) {
+			offline_apply_damage(target_health, _local_config.bot_damage);
+			bot.attack_cooldown = (std::max)(0.05f, _local_config.bot_fire_interval);
 		}
 	}
 
@@ -858,6 +969,35 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 		offline_refill_health(local_health);
 		local_scene->SetPosRotation(_offline_spawn_origin, local_scene->rotation);
 	}
+
+	int team0_on_point = offline_distance_xz(player_position, _objective_position) <= _local_config.objective_radius ? 1 : 0;
+	int team1_on_point = 0;
+	for (const auto& bot : _offline_bots) {
+		if (!bot.alive) continue;
+		if (offline_distance_xz(bot.position, _objective_position) <= _local_config.objective_radius) {
+			if (bot.team == 0) ++team0_on_point; else ++team1_on_point;
+		}
+	}
+	const int contest = team0_on_point - team1_on_point;
+	if (_local_config.mode != LocalMode::TeamDeathmatch && contest != 0) {
+		_objective_owner = contest > 0 ? 0 : 1;
+		const float rate = tick / (std::max)(1.0f, _local_config.capture_seconds);
+		_objective_progress = (std::clamp)(_objective_progress + (contest > 0 ? rate : -rate), -1.0f, 1.0f);
+		if (_local_config.mode == LocalMode::Escort || _local_config.mode == LocalMode::Hybrid)
+			_payload_progress = (std::clamp)(_payload_progress + (contest > 0 ? rate : 0.0f), 0.0f, 1.0f);
+	}
+
+	bool finished = _offline_player_score >= _local_config.score_limit || _offline_bot_score >= _local_config.score_limit;
+	if (_local_config.mode == LocalMode::Control)
+		finished = finished || std::abs(_objective_progress) >= 1.0f;
+	else if (_local_config.mode == LocalMode::Assault)
+		finished = finished || _objective_progress >= 1.0f;
+	else if (_local_config.mode == LocalMode::Escort || _local_config.mode == LocalMode::Hybrid)
+		finished = finished || _payload_progress >= 1.0f;
+	if (_local_match_remaining <= 0.0f && team0_on_point > 0 && team1_on_point > 0)
+		_local_phase = LocalPhase::Overtime;
+	else if (_local_match_remaining <= 0.0f || finished)
+		_local_phase = LocalPhase::Complete;
 }
 
 
@@ -927,7 +1067,7 @@ void PrometheusSystem::OnTick(float tick) {
 			settings->tutorial_dialog_dismissed = 1;
 		}
 
-		if (demo_join_game) {
+		if (demo_join_game && _local_phase == LocalPhase::Idle) {
 			//1: searching
 			//2: match found
 			//3: joining game

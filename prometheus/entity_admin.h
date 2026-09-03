@@ -991,20 +991,52 @@ class PrometheusSystem {
     int _trigger_helloVoiceLine_ticks = -1;
     bool _applied_demo = false;
 
+public:
+    enum class LocalMode : int { TeamDeathmatch, Control, Assault, Escort, Hybrid };
+    enum class LocalPhase : int { Idle, Queueing, Loading, Setup, Active, Overtime, Complete };
+    struct LocalMatchConfig {
+        LocalMode mode{ LocalMode::Control };
+        int allies{ 5 };
+        int enemies{ 6 };
+        int score_limit{ 30 };
+        float match_seconds{ 600.0f };
+        float setup_seconds{ 5.0f };
+        float respawn_seconds{ 5.0f };
+        float player_damage{ 22.0f };
+        float bot_damage{ 8.0f };
+        float bot_fire_interval{ 0.30f };
+        float bot_speed{ 3.25f };
+        float objective_radius{ 8.0f };
+        float capture_seconds{ 20.0f };
+        float payload_distance{ 70.0f };
+        float health_multiplier{ 1.0f };
+        float cooldown_multiplier{ 1.0f };
+    };
+private:
     struct OfflineBot {
         Entity* controller{};
         Entity* model{};
         Vector4 position{};
+        Vector4 spawn_position{};
         float attack_cooldown{};
         float respawn_remaining{};
+        int team{};
         bool alive{ true };
     };
     std::vector<OfflineBot> _offline_bots{};
-    bool _offline_match_active = false;
+    LocalMatchConfig _local_config{};
+    LocalPhase _local_phase{ LocalPhase::Idle };
     int _offline_player_score = 0;
     int _offline_bot_score = 0;
     float _offline_player_fire_cooldown = 0.0f;
+    float _local_phase_remaining = 0.0f;
+    float _local_match_remaining = 0.0f;
+    float _objective_progress = 0.0f;
+    float _payload_progress = 0.0f;
+    float _local_applied_health_multiplier = 1.0f;
+    int _objective_owner = -1;
     Vector4 _offline_spawn_origin{};
+    Vector4 _objective_position{};
 
     void state_replicator_do();
     void state_replicator_exhandled();
@@ -1021,10 +1053,21 @@ public:
     }
 
     bool StartOfflineMatch(int bot_count = 5);
+    bool StartLocalMatch();
+    void BeginLocalQueue();
     void StopOfflineMatch();
-    bool OfflineMatchActive() const { return _offline_match_active; }
+    bool OfflineMatchActive() const { return _local_phase != LocalPhase::Idle && _local_phase != LocalPhase::Complete; }
     int OfflinePlayerScore() const { return _offline_player_score; }
     int OfflineBotScore() const { return _offline_bot_score; }
+    LocalMatchConfig& LocalConfig() { return _local_config; }
+    LocalPhase LocalMatchPhase() const { return _local_phase; }
+    float LocalMatchRemaining() const { return _local_match_remaining; }
+    float LocalObjectiveProgress() const { return _objective_progress; }
+    float LocalPayloadProgress() const { return _payload_progress; }
+    int LocalObjectiveOwner() const { return _objective_owner; }
+    int LocalAliveCount(int team) const;
+    const char* LocalModeName() const;
+    const char* LocalPhaseName() const;
 
     void DeleteLocalEnt() {
         auto local_ent = _game_ea->getLocalEnt();

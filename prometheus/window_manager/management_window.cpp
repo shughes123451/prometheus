@@ -129,18 +129,45 @@ void management_window::render() {
 			if (game_ea) {
 				auto world = get_system27_WorldEngineSystem(game_ea);
 				auto prometheus = PrometheusSystem::instance();
-				if (prometheus && ImGui::BeginMenu("Offline TDM")) {
+				if (prometheus && ImGui::BeginMenu("Local Match Lab")) {
+					auto& cfg = prometheus->LocalConfig();
+					const char* modes[] = { "Team Deathmatch", "Control", "Assault", "Escort", "Hybrid" };
+					int mode = static_cast<int>(cfg.mode);
+					if (ImGui::Combo("Mode", &mode, modes, IM_ARRAYSIZE(modes)))
+						cfg.mode = static_cast<PrometheusSystem::LocalMode>(mode);
+					ImGui::SliderInt("Friendly bots", &cfg.allies, 0, 5);
+					ImGui::SliderInt("Enemy bots", &cfg.enemies, 1, 6);
+					ImGui::SliderInt("Score limit", &cfg.score_limit, 1, 100);
+					ImGui::SliderFloat("Match minutes", &cfg.match_seconds, 60.0f, 1200.0f, "%.0f sec");
+					ImGui::Separator();
+					ImGui::TextUnformatted("Hero / combat tuning");
+					ImGui::SliderFloat("Player weapon damage", &cfg.player_damage, 1.0f, 250.0f, "%.1f");
+					ImGui::SliderFloat("Health multiplier", &cfg.health_multiplier, 0.25f, 5.0f, "%.2fx");
+					ImGui::SliderFloat("Cooldown multiplier", &cfg.cooldown_multiplier, 0.1f, 3.0f, "%.2fx");
+					ImGui::Separator();
+					ImGui::TextUnformatted("Bot tuning");
+					ImGui::SliderFloat("Bot damage", &cfg.bot_damage, 1.0f, 50.0f, "%.1f");
+					ImGui::SliderFloat("Bot fire interval", &cfg.bot_fire_interval, 0.05f, 2.0f, "%.2f sec");
+					ImGui::SliderFloat("Bot movement", &cfg.bot_speed, 0.5f, 10.0f, "%.2f");
+					ImGui::Separator();
+					ImGui::Text("State: %s", prometheus->LocalPhaseName());
+					ImGui::Text("Blue %d alive / Red %d alive", prometheus->LocalAliveCount(0), prometheus->LocalAliveCount(1));
+					ImGui::Text("Score: %d - %d", prometheus->OfflinePlayerScore(), prometheus->OfflineBotScore());
+					ImGui::Text("Time: %.1f", prometheus->LocalMatchRemaining());
+					if (cfg.mode == PrometheusSystem::LocalMode::Escort || cfg.mode == PrometheusSystem::LocalMode::Hybrid)
+						ImGui::ProgressBar(prometheus->LocalPayloadProgress(), ImVec2(180, 0), "Payload");
+					else if (cfg.mode != PrometheusSystem::LocalMode::TeamDeathmatch)
+						ImGui::ProgressBar((prometheus->LocalObjectiveProgress() + 1.0f) * 0.5f, ImVec2(180, 0), "Objective");
 					if (!prometheus->OfflineMatchActive()) {
-						if (ImGui::MenuItem("Start 1v5")) {
-							if (!prometheus->StartOfflineMatch(5))
-								imgui_helpers::messageBox("Spawn a local hero before starting Offline TDM.");
+						if (ImGui::MenuItem("Search for local match"))
+							prometheus->BeginLocalQueue();
+						if (ImGui::MenuItem("Start immediately")) {
+							if (!prometheus->StartLocalMatch())
+								imgui_helpers::messageBox("Spawn/select a local hero before starting the match.");
 						}
 					}
-					else if (ImGui::MenuItem("Stop match")) {
+					else if (ImGui::MenuItem("Stop match"))
 						prometheus->StopOfflineMatch();
-					}
-					ImGui::Separator();
-					ImGui::Text("Player %d - %d Bots", prometheus->OfflinePlayerScore(), prometheus->OfflineBotScore());
 					ImGui::EndMenu();
 				}
 				if (ImGui::BeginMenu("Map")) {
