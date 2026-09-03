@@ -846,8 +846,8 @@ bool PrometheusSystem::StartLocalMatch() {
 		if (std::abs(native_position.X) + std::abs(native_position.Y) + std::abs(native_position.Z) > 0.01f)
 			_offline_spawn_origin = native_position;
 	}
-	if (std::abs(_offline_spawn_origin.X) + std::abs(_offline_spawn_origin.Y) +
-		std::abs(_offline_spawn_origin.Z) <= 0.01f) {
+	if (std::sqrt(_offline_spawn_origin.X * _offline_spawn_origin.X +
+		_offline_spawn_origin.Z * _offline_spawn_origin.Z) < 5.0f) {
 		// The retired server normally supplies this transform. This is the known-good
 		// Hanamura prototype spawn already used by Prometheus' original demo path.
 		_offline_spawn_origin = Vector4(108.336914f, 0.999023f, 0.142578f, 0.0f);
@@ -909,8 +909,9 @@ bool PrometheusSystem::spawn_next_offline_bot() {
 	const bool model_placed = offline_place_entity(bot.model, bot.position, rotation);
 	diagnostic_log("bot_spawn slot=%d team=%d controller=%x model=%x placed=%d components=",
 		index, team, bot.controller->entity_id, bot.model->entity_id, model_placed ? 1 : 0);
-	for (int component = 0; component < bot.model->component_list.num; ++component)
-		diagnostic_log("%02x,", bot.model->component_list.ptr[component]->component_id);
+	for (int component = 0; component < bot.model->component_list.num - 1; ++component)
+		if (bot.model->component_list.ptr[component])
+			diagnostic_log("%02x,", bot.model->component_list.ptr[component]->component_id);
 	diagnostic_log("\n");
 	offline_scale_health(bot.model->getById<Component_28_STUHealthComponent>(0x28), _local_config.health_multiplier);
 	_offline_bots.push_back(bot);
@@ -1188,8 +1189,9 @@ void PrometheusSystem::diagnostic_tick(float tick, Entity* local_controller, Ent
 		movement ? movement->mov_state.absolute_position.Z : 0, mover ? mover->movement_state_1.absolute_position.X : 0,
 		mover ? mover->movement_state_1.absolute_position.Y : 0, mover ? mover->movement_state_1.absolute_position.Z : 0,
 		health ? offline_health_total(health) : 0, scripts ? scripts->ss_inner.g1_instanceArr.num : -1, buttons);
-	for (int component = 0; component < local_model->component_list.num; ++component)
-		diagnostic_log("%02x,", local_model->component_list.ptr[component]->component_id);
+	for (int component = 0; component < local_model->component_list.num - 1; ++component)
+		if (local_model->component_list.ptr[component])
+			diagnostic_log("%02x,", local_model->component_list.ptr[component]->component_id);
 	diagnostic_log("\n");
 }
 
