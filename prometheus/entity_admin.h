@@ -1035,15 +1035,22 @@ private:
     float _payload_progress = 0.0f;
     float _local_applied_health_multiplier = 1.0f;
     float _diagnostic_elapsed = 0.0f;
+    float _native_player_ready_elapsed = 0.0f;
     int _diagnostic_sample = 0;
     LocalPhase _diagnostic_last_phase{ LocalPhase::Idle };
     int _objective_owner = -1;
+    int _pending_bot_count = 0;
+    int _next_bot_index = 0;
+    float _bot_spawn_timer = 0.0f;
+    __int64 _pending_model_resource = 0;
+    __int64 _pending_hero_id = 0;
     Vector4 _offline_spawn_origin{};
     Vector4 _objective_position{};
 
     void state_replicator_do();
     void state_replicator_exhandled();
     void offline_match_tick(float tick, Entity* local_controller, Entity* local_model);
+    bool spawn_next_offline_bot();
     void diagnostic_tick(float tick, Entity* local_controller, Entity* local_model);
 
     static inline PrometheusSystem* s_instance = nullptr;

@@ -755,8 +755,6 @@ bool offline_place_entity(Entity* entity, const Vector4& position, const Vector4
 			movement->mov_state.absolute_position = position;
 			movement->mov_state.position_delta = Vector4{};
 			movement->mov_state.rotation_quaternion = rotation;
-			movement->mov_state.command_frame++;
-			movement->PasteMovementState(&movement->mov_state);
 			placed = true;
 		}
 		if (auto mover = entity->getById<Component_15_STUCharacterMoverComponent>(0x15)) {
@@ -803,6 +801,7 @@ void PrometheusSystem::BeginLocalQueue() {
 	StopOfflineMatch();
 	_local_phase = LocalPhase::Queueing;
 	_local_phase_remaining = 2.5f;
+	_native_player_ready_elapsed = 0.0f;
 	demo_join_game = true;
 	printf("Local match: searching for bots (%s)\n", LocalModeName());
 }
@@ -847,6 +846,15 @@ bool PrometheusSystem::StartLocalMatch() {
 		if (std::abs(native_position.X) + std::abs(native_position.Y) + std::abs(native_position.Z) > 0.01f)
 			_offline_spawn_origin = native_position;
 	}
+	if (std::abs(_offline_spawn_origin.X) + std::abs(_offline_spawn_origin.Y) +
+		std::abs(_offline_spawn_origin.Z) <= 0.01f) {
+		// The retired server normally supplies this transform. This is the known-good
+		// Hanamura prototype spawn already used by Prometheus' original demo path.
+		_offline_spawn_origin = Vector4(108.336914f, 0.999023f, 0.142578f, 0.0f);
+		offline_place_entity(local_model, _offline_spawn_origin, local_scene->rotation);
+		diagnostic_log("spawn_fallback_applied hanamura=(%.3f,%.3f,%.3f)\n",
+			_offline_spawn_origin.X, _offline_spawn_origin.Y, _offline_spawn_origin.Z);
+	}
 	diagnostic_log("match_start mode=%s origin=(%.3f,%.3f,%.3f) hero=%llx\n", LocalModeName(),
 		_offline_spawn_origin.X, _offline_spawn_origin.Y, _offline_spawn_origin.Z, player_info->selected_heroid);
 	_offline_player_score = 0;
@@ -860,52 +868,60 @@ bool PrometheusSystem::StartLocalMatch() {
 	_objective_position = Vector4(_offline_spawn_origin.X + 18.0f, _offline_spawn_origin.Y,
 		_offline_spawn_origin.Z, 0.0f);
 
-	const int bot_count = (std::clamp)(_local_config.allies, 0, 5) + (std::clamp)(_local_config.enemies, 1, 6);
-	for (int index = 0; index < bot_count; ++index) {
-		const int team = index < _local_config.allies ? 0 : 1;
-		player_spawner spawner(model_resource);
-		spawner.controller_info.heroid = player_info->selected_heroid;
-		spawner.controller_info.set_localent = false;
-		spawner.controller_info.set_2f_movable = false;
-		spawner.controller_info.load_2f_33 = false;
-		spawner.controller_info.team = team;
-		spawner.model_info.heroid = player_info->selected_heroid;
-		spawner.model_info.team = team;
-		auto spawned = spawner.spawn();
-		if (!spawned.first || !spawned.second)
-			continue;
+	_pending_bot_count = (std::clamp)(_local_config.allies, 0, 5) + (std::clamp)(_local_config.enemies, 1, 6);
+	_next_bot_index = 0;
+	_bot_spawn_timer = 0.0f;
+	_pending_model_resource = model_resource;
+	_pending_hero_id = player_info->selected_heroid;
+	_local_phase = LocalPhase::Setup;
+	printf("Local match: %s staging %d bots\n", LocalModeName(), _pending_bot_count);
+	return true;
+}
 
-		const float side = team == 0 ? -1.0f : 1.0f;
-		const int slot = team == 0 ? index : index - _local_config.allies;
-		OfflineBot bot{};
-		bot.controller = spawned.first;
-		bot.model = spawned.second;
-		bot.team = team;
-		bot.position = Vector4(
-			_offline_spawn_origin.X + side * 18.0f,
-			_offline_spawn_origin.Y,
-			_offline_spawn_origin.Z + (slot - 2.5f) * 3.0f,
-			0.0f);
-		bot.spawn_position = bot.position;
-		Vector4 rotation(0.0f, team == 0 ? 0.7071067f : -0.7071067f, 0.0f, 0.7071067f);
-		const bool model_placed = offline_place_entity(bot.model, bot.position, rotation);
-		offline_place_entity(bot.controller, bot.position, rotation);
-		diagnostic_log("bot_spawn slot=%d team=%d controller=%x model=%x placed=%d components=",
-			index, team, bot.controller->entity_id, bot.model->entity_id, model_placed ? 1 : 0);
-		for (int component = 0; component < bot.model->component_list.num; ++component)
-			diagnostic_log("%02x,", bot.model->component_list.ptr[component]->component_id);
-		diagnostic_log("\n");
-		offline_scale_health(bot.model->getById<Component_28_STUHealthComponent>(0x28), _local_config.health_multiplier);
-		_offline_bots.push_back(bot);
+bool PrometheusSystem::spawn_next_offline_bot() {
+	if (_next_bot_index >= _pending_bot_count || !_pending_model_resource)
+		return false;
+	const int index = _next_bot_index++;
+	const int team = index < _local_config.allies ? 0 : 1;
+	player_spawner spawner(_pending_model_resource);
+	spawner.controller_info.heroid = _pending_hero_id;
+	spawner.controller_info.set_localent = false;
+	spawner.controller_info.set_2f_movable = false;
+	spawner.controller_info.load_2f_33 = false;
+	spawner.controller_info.team = team;
+	spawner.model_info.heroid = _pending_hero_id;
+	spawner.model_info.team = team;
+	auto spawned = spawner.spawn();
+	if (!spawned.first || !spawned.second) {
+		diagnostic_log("bot_spawn_failed slot=%d team=%d\n", index, team);
+		return true;
 	}
-
-	_local_phase = _offline_bots.empty() ? LocalPhase::Idle : LocalPhase::Setup;
-	printf("Local match: %s started with %zu bots\n", LocalModeName(), _offline_bots.size());
-	return _local_phase != LocalPhase::Idle;
+	const float side = team == 0 ? -1.0f : 1.0f;
+	const int slot = team == 0 ? index : index - _local_config.allies;
+	OfflineBot bot{};
+	bot.controller = spawned.first;
+	bot.model = spawned.second;
+	bot.team = team;
+	bot.position = Vector4(_offline_spawn_origin.X + side * 18.0f, _offline_spawn_origin.Y,
+		_offline_spawn_origin.Z + (slot - 2.5f) * 3.0f, 0.0f);
+	bot.spawn_position = bot.position;
+	Vector4 rotation(0.0f, team == 0 ? 0.7071067f : -0.7071067f, 0.0f, 0.7071067f);
+	const bool model_placed = offline_place_entity(bot.model, bot.position, rotation);
+	diagnostic_log("bot_spawn slot=%d team=%d controller=%x model=%x placed=%d components=",
+		index, team, bot.controller->entity_id, bot.model->entity_id, model_placed ? 1 : 0);
+	for (int component = 0; component < bot.model->component_list.num; ++component)
+		diagnostic_log("%02x,", bot.model->component_list.ptr[component]->component_id);
+	diagnostic_log("\n");
+	offline_scale_health(bot.model->getById<Component_28_STUHealthComponent>(0x28), _local_config.health_multiplier);
+	_offline_bots.push_back(bot);
+	return true;
 }
 
 void PrometheusSystem::StopOfflineMatch() {
 	_local_phase = LocalPhase::Idle;
+	_native_player_ready_elapsed = 0.0f;
+	_pending_bot_count = 0;
+	_next_bot_index = 0;
 	demo_join_game = false;
 	auto bots = _offline_bots;
 	_offline_bots.clear();
@@ -937,8 +953,11 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 	}
 	if (_local_phase == LocalPhase::Loading) {
 		_local_phase_remaining -= tick;
-		if (local_controller && local_model)
-			StartLocalMatch();
+		if (local_controller && local_model) {
+			_native_player_ready_elapsed += tick;
+			if (_native_player_ready_elapsed >= 2.0f)
+				StartLocalMatch();
+		}
 		else if (_local_phase_remaining <= 0.0f) {
 			printf("Local match: timed out waiting for hero selection\n");
 			StopOfflineMatch();
@@ -956,8 +975,15 @@ void PrometheusSystem::offline_match_tick(float tick, Entity* local_controller, 
 
 	if (_local_phase == LocalPhase::Setup) {
 		_local_phase_remaining -= tick;
-		if (_local_phase_remaining <= 0.0f)
+		_bot_spawn_timer -= tick;
+		if (_next_bot_index < _pending_bot_count && _bot_spawn_timer <= 0.0f) {
+			spawn_next_offline_bot();
+			_bot_spawn_timer = 0.25f;
+		}
+		if (_local_phase_remaining <= 0.0f && _next_bot_index >= _pending_bot_count) {
 			_local_phase = LocalPhase::Active;
+			diagnostic_log("bot_staging_complete spawned=%zu requested=%d\n", _offline_bots.size(), _pending_bot_count);
+		}
 		return;
 	}
 	const Vector4 player_position = local_scene->position;
