@@ -92,9 +92,7 @@ struct MovementState {
 	}
 
 	static MovementState* create() {
-		auto result = new MovementState{};
-		((void(*)(MovementState*))(globals::gameBase + 0xc1de50))(result); //constructor
-		return result;
+		return new MovementState{};
 	}
 
 	void copyTo(MovementState* destination) {

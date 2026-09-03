@@ -5,6 +5,7 @@
 #include "idadefs.h"
 #include <stdexcept>
 #include <map>
+#include <set>
 #include <vector>
 
 struct Entity;
@@ -63,8 +64,8 @@ struct Entity {
         STRUCT_PLACE(uint32, entity_global_id, 0x90);
         STRUCT_PLACE(uint32, entity_id, 0x94);
         STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry, 0x30);
-        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry2, 0x38); //Für STUSkinTheme
-        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry3, 0x40); //Für STUSkinBase
+        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry2, 0x38); //FÃ¼r STUSkinTheme
+        STRUCT_PLACE(MisalignedResourceLoadEntry*, resload_entry3, 0x40); //FÃ¼r STUSkinBase
     };
 
     inline ComponentBase* getById(int id) {
@@ -220,7 +221,7 @@ struct Component_10_FilterBits {
         }
     }
 
-    //default values für controller entity
+    //default values fÃ¼r controller entity
     void set_filterbits_spectator() {
         field_8C = 0x101;
         field_8E = 1;
@@ -461,7 +462,7 @@ struct Component_1_SceneRendering {
     }
 
     bool IsVisible() {
-        return (rendering_flags & 0x200000008000) != 0x200000008000;
+        return (rendering_flags & 0x200000008000) == 0x200000008000;
     }
 
     //Only x,y,z
@@ -990,8 +991,68 @@ class PrometheusSystem {
     int _trigger_helloVoiceLine_ticks = -1;
     bool _applied_demo = false;
 
+public:
+    enum class LocalMode : int { TeamDeathmatch, Control, Assault, Escort, Hybrid };
+    enum class LocalPhase : int { Idle, Queueing, Loading, Setup, Active, Overtime, Complete };
+    struct LocalMatchConfig {
+        LocalMode mode{ LocalMode::Control };
+        int allies{ 5 };
+        int enemies{ 6 };
+        int score_limit{ 30 };
+        float match_seconds{ 600.0f };
+        float setup_seconds{ 5.0f };
+        float respawn_seconds{ 5.0f };
+        float player_damage{ 22.0f };
+        float bot_damage{ 8.0f };
+        float bot_fire_interval{ 0.30f };
+        float bot_speed{ 3.25f };
+        float objective_radius{ 8.0f };
+        float capture_seconds{ 20.0f };
+        float payload_distance{ 70.0f };
+        float health_multiplier{ 1.0f };
+        float cooldown_multiplier{ 1.0f };
+    };
+private:
+    struct OfflineBot {
+        Entity* controller{};
+        Entity* model{};
+        Vector4 position{};
+        Vector4 spawn_position{};
+        float attack_cooldown{};
+        float respawn_remaining{};
+        int team{};
+        bool alive{ true };
+    };
+    std::vector<OfflineBot> _offline_bots{};
+    LocalMatchConfig _local_config{};
+    LocalPhase _local_phase{ LocalPhase::Idle };
+    int _offline_player_score = 0;
+    int _offline_bot_score = 0;
+    float _offline_player_fire_cooldown = 0.0f;
+    float _local_phase_remaining = 0.0f;
+    float _local_match_remaining = 0.0f;
+    float _objective_progress = 0.0f;
+    float _payload_progress = 0.0f;
+    float _local_applied_health_multiplier = 1.0f;
+    float _diagnostic_elapsed = 0.0f;
+    float _native_player_ready_elapsed = 0.0f;
+    int _diagnostic_sample = 0;
+    LocalPhase _diagnostic_last_phase{ LocalPhase::Idle };
+    int _objective_owner = -1;
+    int _pending_bot_count = 0;
+    int _next_bot_index = 0;
+    float _bot_spawn_timer = 0.0f;
+    __int64 _pending_model_resource = 0;
+    __int64 _pending_hero_id = 0;
+    Vector4 _offline_spawn_origin{};
+    Vector4 _objective_position{};
+
     void state_replicator_do();
     void state_replicator_exhandled();
+    void offline_match_tick(float tick, Entity* local_controller, Entity* local_model);
+    bool spawn_next_offline_bot();
+    bool spawn_default_local_hero();
+    void diagnostic_tick(float tick, Entity* local_controller, Entity* local_model);
 
     static inline PrometheusSystem* s_instance = nullptr;
     static inline View* (*deallocate_view_orig)(View*, char);
@@ -1002,6 +1063,23 @@ public:
     static PrometheusSystem* instance() {
         return s_instance;
     }
+
+    bool StartOfflineMatch(int bot_count = 5);
+    bool StartLocalMatch();
+    void BeginLocalQueue();
+    void StopOfflineMatch();
+    bool OfflineMatchActive() const { return _local_phase != LocalPhase::Idle && _local_phase != LocalPhase::Complete; }
+    int OfflinePlayerScore() const { return _offline_player_score; }
+    int OfflineBotScore() const { return _offline_bot_score; }
+    LocalMatchConfig& LocalConfig() { return _local_config; }
+    LocalPhase LocalMatchPhase() const { return _local_phase; }
+    float LocalMatchRemaining() const { return _local_match_remaining; }
+    float LocalObjectiveProgress() const { return _objective_progress; }
+    float LocalPayloadProgress() const { return _payload_progress; }
+    int LocalObjectiveOwner() const { return _objective_owner; }
+    int LocalAliveCount(int team) const;
+    const char* LocalModeName() const;
+    const char* LocalPhaseName() const;
 
     void DeleteLocalEnt() {
         auto local_ent = _game_ea->getLocalEnt();
@@ -1014,9 +1092,15 @@ public:
 
             auto pet_comp = local_ent->getById<Component_20_ModelReference>(0x20);
             if (pet_comp) {
-                _game_ea->delEnt(_game_ea->getEntById(pet_comp->aim_entid));
-                _game_ea->delEnt(_game_ea->getEntById(pet_comp->cam_attach_entid));
-                _game_ea->delEnt(_game_ea->getEntById(pet_comp->movement_attach_entid));
+                std::set<uint32> attachment_ids{
+                    pet_comp->aim_entid,
+                    pet_comp->cam_attach_entid,
+                    pet_comp->movement_attach_entid
+                };
+                for (auto attachment_id : attachment_ids) {
+                    if (attachment_id != 0 && attachment_id != local_ent->entity_id)
+                        _game_ea->delEnt(_game_ea->getEntById(attachment_id));
+                }
             }
             _game_ea->delEnt(local_ent);
         }
@@ -1031,4 +1115,3 @@ public:
 
     bool demo_join_game = false;
 };
-

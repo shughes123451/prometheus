@@ -37,8 +37,8 @@ private:
 public:
 	spawn_info controller_info{};
 	spawn_info model_info{};
-	Entity* controller_ent;
-	Entity* model_ent;
+	Entity* controller_ent{};
+	Entity* model_ent{};
 
 	void template_localPlayer();
 

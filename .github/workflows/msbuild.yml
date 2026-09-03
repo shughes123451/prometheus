@@ -6,8 +6,10 @@
 name: MSBuild
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "codex/offline-bots" ]
+  pull_request:
 
 env:
   # Path to the solution file relative to the root of the project.
@@ -29,23 +31,30 @@ jobs:
       uses: microsoft/setup-msbuild@v1.0.2
 
     - name: Restore NuGet packages
-      working-directory: ${{env.GITHUB_WORKSPACE}}
+      working-directory: ${{ github.workspace }}
       run: nuget restore ${{env.SOLUTION_FILE_PATH}}
 
     - name: Stage vcpkg
-      working-directory: ${{env.GITHUB_WORKSPACE}}
+      working-directory: ${{ github.workspace }}
       run: . .\external\vcpkg\scripts\bootstrap.ps1
 
     - name: Build
-      working-directory: ${{env.GITHUB_WORKSPACE}}
+      working-directory: ${{ github.workspace }}
       # Add additional options to the MSBuild command line here (like platform or verbosity level).
       # See https://docs.microsoft.com/visualstudio/msbuild/msbuild-command-line-reference
-      run: msbuild /p:Configuration=Release /p:PlatformTarget=x64 /p:OutDir=${{env.GITHUB_WORKSPACE}}\output ${{env.SOLUTION_FILE_PATH}}
+      run: msbuild /p:Configuration=Release /p:PlatformTarget=x64 /p:OutDir=${{ github.workspace }}\output ${{ env.SOLUTION_FILE_PATH }}
 
     - name: Zip
-      run: Compress-Archive -Path ${{env.GITHUB_WORKSPACE}}\output\*.* -DestinationPath ${{env.GITHUB_WORKSPACE}}\prometheus-release.zip
+      run: Compress-Archive -Path ${{ github.workspace }}\output\*.* -DestinationPath ${{ github.workspace }}\prometheus-release.zip
+
+    - name: Upload test build
+      uses: actions/upload-artifact@v4
+      with:
+        name: prometheus-${{ github.sha }}
+        path: prometheus-release.zip
 
     - uses: ncipollo/release-action@v1
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       with:
         tag: v0.0.1
         allowUpdates: true
@@ -55,4 +64,4 @@ jobs:
         generateReleaseNotes: true
         removeArtifacts: true
         replacesArtifacts: true
-        artifacts: ${{env.GITHUB_WORKSPACE}}\prometheus-release.zip
+        artifacts: ${{ github.workspace }}\prometheus-release.zip
